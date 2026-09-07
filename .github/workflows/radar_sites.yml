@@ -1,0 +1,36 @@
+name: Radar v3 - per-site BoM accumulation to R2
+
+on:
+  schedule:
+    # Same cadence as radar_bom.yml; the BoM FTP retains only ~2h of 5-minute frames.
+    - cron: '7,37 * * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: radar-sites
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install dependencies
+        run: npm install --no-audit --no-fund
+
+      # Accumulation state lives in R2, not git: the generator restores any day
+      # it touches from the bucket before ingesting, then uploads with wrangler.
+      - name: Ingest new radar frames and publish to R2
+        run: node scripts/build_radar_sites.mjs

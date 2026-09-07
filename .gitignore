@@ -1,1 +1,3 @@
 node_modules/
+# Local mirror of the per-site radar accumulation published to R2 (build_radar_sites.mjs)
+radar_sites/

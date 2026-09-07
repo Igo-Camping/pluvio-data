@@ -20,5 +20,8 @@
   "homepage": "https://github.com/Pluviometrics/pluvio-data#readme",
   "dependencies": {
     "pngjs": "^7.0.0"
+  },
+  "devDependencies": {
+    "wrangler": "^4.0.0"
   }
 }
