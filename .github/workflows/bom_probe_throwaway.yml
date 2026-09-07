@@ -7,107 +7,70 @@ permissions:
   contents: read
 
 jobs:
-  probe:
+  probe2:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - name: Runner identity
-        run: |
-          echo "runner egress IP: $(curl -sS -m 15 https://api.ipify.org || echo unknown)"
-          curl --version | head -1
-
-      - name: "(a) AWS JSON via www, default curl UA"
+      - name: "Discover Audley (066176) hourly table via FTP bulletin listing"
         continue-on-error: true
         run: |
           set +e
-          curl -sS -m 60 -D h.txt -o a_www_curl.json "https://www.bom.gov.au/fwo/IDN60801/IDN60801.94757.json"
-          echo "exit=$?"; head -12 h.txt; echo "bytes=$(wc -c < a_www_curl.json)"; head -c 300 a_www_curl.json; echo
+          UA="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0 Safari/537.36"
+          curl -sS -m 90 -l "ftp://ftp.bom.gov.au/anon/gen/fwo/" > ftp_list.txt
+          echo "ftp entries=$(wc -l < ftp_list.txt)"
+          echo "--- IDN60* html/xml/txt entries on FTP ---"
+          grep -E '^IDN60[0-9]{3}\.(html|xml|txt)$' ftp_list.txt | sort | tr '\n' ' '; echo
+          echo "--- scan each IDN60*.html on FTP for Audley/066176 ---"
+          for f in $(grep -E '^IDN60[0-9]{3}\.html$' ftp_list.txt | sort | head -40); do
+            curl -sS -m 60 -o "$f" "ftp://ftp.bom.gov.au/anon/gen/fwo/$f" || continue
+            if grep -qi 'audley\|066176' "$f"; then echo "HIT $f bytes=$(wc -c < "$f")"; echo "AUDLEY_FILE=$f" >> "$GITHUB_ENV"; fi
+          done
 
-      - name: "(a) AWS JSON via www, browser UA"
+      - name: "Fetch the discovered bulletin: FTP vs www (browser UA, default UA), retention and cadence"
         continue-on-error: true
         run: |
           set +e
-          curl -sS -m 60 -D h.txt -o a_www_browser.json -A "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0 Safari/537.36" -H "Accept: application/json,text/html" "https://www.bom.gov.au/fwo/IDN60801/IDN60801.94757.json"
-          echo "exit=$?"; head -12 h.txt; echo "bytes=$(wc -c < a_www_browser.json)"; head -c 300 a_www_browser.json; echo
-
-      - name: "(a) AWS JSON via FTP"
-        continue-on-error: true
-        run: |
-          set +e
-          curl -sS -m 90 -o a_ftp.json "ftp://ftp.bom.gov.au/anon/gen/fwo/IDN60801.94757.json"
-          echo "exit=$?"; echo "bytes=$(wc -c < a_ftp.json 2>/dev/null)"; head -c 300 a_ftp.json 2>/dev/null; echo
-          echo "--- FTP dir listing (filtered) ---"
-          curl -sS -m 90 -l "ftp://ftp.bom.gov.au/anon/gen/fwo/" > ftp_list.txt; echo "list exit=$? entries=$(wc -l < ftp_list.txt)"
-          grep -c '^IDN60801' ftp_list.txt || true
-          grep -i '066176\|IDN60801.94757\|IDN60001\|IDN65' ftp_list.txt | head -20 || true
-
-      - name: "(a) analyse JSON bodies: retention window and cadence"
-        continue-on-error: true
-        run: |
+          UA="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0 Safari/537.36"
+          f="${AUDLEY_FILE:-IDN60153.html}"
+          echo "bulletin file: $f"
+          curl -sS -m 60 -o ftp_b.html -w "FTP  status=%{http_code} bytes=%{size_download}\n" "ftp://ftp.bom.gov.au/anon/gen/fwo/$f"
+          curl -sS -m 60 -L -o www_b.html -w "WWW browser-UA status=%{http_code} bytes=%{size_download} final=%{url_effective}\n" -A "$UA" "http://www.bom.gov.au/fwo/$f"
+          curl -sS -m 60 -L -o www_c.html -w "WWW default-UA status=%{http_code} bytes=%{size_download}\n" "http://www.bom.gov.au/fwo/$f"
           python3 - <<'EOF'
-          import json, datetime as dt, os
-          for f in ["a_www_curl.json", "a_www_browser.json", "a_ftp.json"]:
-              if not os.path.exists(f) or os.path.getsize(f) == 0:
-                  print(f, "-> empty"); continue
-              try:
-                  d = json.load(open(f))
-              except Exception as e:
-                  print(f, "-> not JSON:", e); continue
-              obs = d["observations"]["data"]
-              hdr = d["observations"]["header"][0]
-              ts = sorted(dt.datetime.strptime(o["aifstime_utc"], "%Y%m%d%H%M%S") for o in obs)
-              gaps = [(b - a).total_seconds() / 60 for a, b in zip(ts, ts[1:])]
-              import collections
-              print(f, "->", hdr.get("name"), "| obs", len(obs), "| span", ts[0], "to", ts[-1], "UTC =", round((ts[-1]-ts[0]).total_seconds()/3600, 1), "h",
-                    "| gap minutes mode", collections.Counter(gaps).most_common(3),
-                    "| refresh", hdr.get("refresh_message"), "| fields", [k for k in obs[0] if "rain" in k])
+          import re, html, os
+          for fn in ["ftp_b.html", "www_b.html"]:
+              if not os.path.exists(fn) or os.path.getsize(fn) == 0:
+                  print(fn, "empty"); continue
+              t = open(fn, errors="ignore").read()
+              title = re.search(r"<title>(.*?)</title>", t, re.S)
+              print("==", fn, "title:", title.group(1).strip()[:100] if title else None)
+              issued = re.findall(r"[Ii]ssued[^<]{0,80}", t)[:2]
+              print("   issued:", issued)
+              # Header row(s) near Audley: find the table containing it and print its header + Audley row
+              tables = re.findall(r"<table.*?</table>", t, re.S)
+              for tb in tables:
+                  if not re.search(r"audley|066176", tb, re.I): continue
+                  rows = re.findall(r"<tr[^>]*>(.*?)</tr>", tb, re.S)
+                  def cells(r): return [html.unescape(re.sub("<[^>]+>", "", c)).strip() for c in re.findall(r"<t[dh][^>]*>(.*?)</t[dh]>", r, re.S)]
+                  hdrs = [cells(r) for r in rows[:3]]
+                  print("   table rows:", len(rows), "| header rows:", hdrs)
+                  for r in rows:
+                      if re.search(r"audley|066176", r, re.I): print("   AUDLEY ROW:", cells(r)); break
+                  break
+              times = re.findall(r"\b(\d{1,2}:\d{2})\b", t)
+              print("   distinct clock times in page:", sorted(set(times))[:30])
           EOF
 
-      - name: "(b) NSW flood page and discovery of the Audley 066176 table"
+      - name: "Map page (greatersydney.shtml): Audley popup values and table links, www vs FTP"
         continue-on-error: true
         run: |
           set +e
           UA="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0 Safari/537.36"
-          echo "--- /nsw/flood/ default curl UA ---"
-          curl -sS -m 60 -o flood_curl.html -w "status=%{http_code} bytes=%{size_download}\n" "http://www.bom.gov.au/nsw/flood/"
-          echo "--- /nsw/flood/ browser UA ---"
-          curl -sS -m 60 -A "$UA" -o flood.html -w "status=%{http_code} bytes=%{size_download} final=%{url_effective}\n" -L "http://www.bom.gov.au/nsw/flood/"
-          echo "--- links on the flood page mentioning rain/river tables ---"
-          grep -o 'href="[^"]*"' flood.html | grep -i 'rain\|river\|tbl\|IDN6' | sort -u | head -40
-          echo "--- crawl NSW rain & river pages for 066176 / Audley ---"
-          for p in $(grep -o 'href="[^"]*"' flood.html | sed 's/href="//;s/"$//' | grep -i '/nsw/flood/.*\.shtml\|rain' | sort -u | head -25); do
-            case "$p" in http*) u="$p";; /*) u="http://www.bom.gov.au$p";; *) u="http://www.bom.gov.au/nsw/flood/$p";; esac
-            body=$(curl -sS -m 60 -A "$UA" -L "$u")
-            if echo "$body" | grep -qi '066176\|audley'; then
-              echo "HIT $u"; echo "$body" | grep -io 'href="[^"]*"[^<]*\(066176\|audley\)[^<]*' | head -5
-              echo "$body" | grep -o 'href="[^"]*\(066176\|IDN60001\|tbl\)[^"]*"' | sort -u | head -10
-            fi
-          done
-
-      - name: "(b) fetch the Audley table candidates, www and FTP"
-        continue-on-error: true
-        run: |
-          set +e
-          UA="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0 Safari/537.36"
-          for u in "http://www.bom.gov.au/fwo/IDN60001/IDN60001.066176.tbl.shtml" "http://www.bom.gov.au/fwo/IDN65163/IDN65163.066176.tbl.shtml" "http://www.bom.gov.au/nsw/flood/rain_river.shtml"; do
-            echo "--- $u (browser UA) ---"
-            curl -sS -m 60 -A "$UA" -o tbl.html -w "status=%{http_code} bytes=%{size_download}\n" "$u"
-            grep -i 'audley\|066176' tbl.html | head -3
-            python3 - <<'EOF'
-          import re, html
-          t = open("tbl.html", errors="ignore").read()
-          times = re.findall(r'(\d{2}/\d{2}/\d{4} \d{2}:\d{2})', t)
-          if times:
-              print("  timestamps found:", len(times), "first", times[-1], "last", times[0])
-          rows = re.findall(r'<tr[^>]*>(.*?)</tr>', t, flags=re.S)
-          print("  table rows:", len(rows))
-          for r in rows[:6]:
-              cells = [html.unescape(re.sub('<[^>]+>', '', c)).strip() for c in re.findall(r'<t[dh][^>]*>(.*?)</t[dh]>', r, flags=re.S)]
-              if cells: print("  ", cells[:8])
-          EOF
-          done
-          echo "--- FTP mirror of table candidates ---"
-          for f in IDN60001.066176.tbl.shtml IDN65163.066176.tbl.shtml; do
-            curl -sS -m 60 -o /dev/null -w "$f status=%{http_code} bytes=%{size_download}\n" "ftp://ftp.bom.gov.au/anon/gen/fwo/$f"
-          done
-          curl -sS -m 90 -l "ftp://ftp.bom.gov.au/anon/gen/fwo/" | grep -i 'tbl' | head -10
+          curl -sS -m 60 -L -A "$UA" -o gs.html -w "greatersydney www browser-UA status=%{http_code} bytes=%{size_download}\n" "http://www.bom.gov.au/nsw/flood/greatersydney.shtml"
+          grep -o 'PopupRain([^)]*Audley[^)]*)' gs.html | head -3
+          grep -io 'issued[^<]\{0,80\}' gs.html | head -2
+          echo "--- links with tbl / bulletin on the map page ---"
+          grep -o 'href="[^"]*"' gs.html | grep -i 'tbl\|IDN60\|bulletin\|table' | sort -u | head -15
+          echo "--- FTP: any greatersydney / nsw flood map mirror? ---"
+          grep -i 'greatersydney\|sydney' ftp_list.txt 2>/dev/null | head -5
+          curl -sS -m 60 -o /dev/null -w "ftp anon/gen/fwo/greatersydney.shtml status=%{http_code}\n" "ftp://ftp.bom.gov.au/anon/gen/fwo/greatersydney.shtml"
