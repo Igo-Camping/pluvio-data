@@ -7,70 +7,41 @@ permissions:
   contents: read
 
 jobs:
-  probe2:
+  probe3:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 10
     steps:
-      - name: "Discover Audley (066176) hourly table via FTP bulletin listing"
+      - name: "Characterise IDN60159 / IDN60167 / IDN60175 (Audley) from FTP and www"
         continue-on-error: true
         run: |
           set +e
           UA="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0 Safari/537.36"
-          curl -sS -m 90 -l "ftp://ftp.bom.gov.au/anon/gen/fwo/" > ftp_list.txt
-          echo "ftp entries=$(wc -l < ftp_list.txt)"
-          echo "--- IDN60* html/xml/txt entries on FTP ---"
-          grep -E '^IDN60[0-9]{3}\.(html|xml|txt)$' ftp_list.txt | sort | tr '\n' ' '; echo
-          echo "--- scan each IDN60*.html on FTP for Audley/066176 ---"
-          for f in $(grep -E '^IDN60[0-9]{3}\.html$' ftp_list.txt | sort | head -40); do
-            curl -sS -m 60 -o "$f" "ftp://ftp.bom.gov.au/anon/gen/fwo/$f" || continue
-            if grep -qi 'audley\|066176' "$f"; then echo "HIT $f bytes=$(wc -c < "$f")"; echo "AUDLEY_FILE=$f" >> "$GITHUB_ENV"; fi
+          for f in IDN60159.html IDN60167.html IDN60175.html; do
+            curl -sS -m 60 -o "ftp_$f" -w "$f FTP status=%{http_code} bytes=%{size_download}\n" "ftp://ftp.bom.gov.au/anon/gen/fwo/$f"
+            curl -sS -m 60 -L -A "$UA" -o "www_$f" -w "$f WWW browser-UA status=%{http_code} bytes=%{size_download}\n" "http://www.bom.gov.au/fwo/$f"
+            curl -sS -m 60 -L -o /dev/null -w "$f WWW default-UA status=%{http_code}\n" "http://www.bom.gov.au/fwo/$f"
+            curl -sS -m 60 -L -A "$UA" -o /dev/null -w "$f WWW wrap_fwo.pl browser-UA status=%{http_code} bytes=%{size_download}\n" "http://www.bom.gov.au/cgi-bin/wrap_fwo.pl?$f"
           done
-
-      - name: "Fetch the discovered bulletin: FTP vs www (browser UA, default UA), retention and cadence"
-        continue-on-error: true
-        run: |
-          set +e
-          UA="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0 Safari/537.36"
-          f="${AUDLEY_FILE:-IDN60153.html}"
-          echo "bulletin file: $f"
-          curl -sS -m 60 -o ftp_b.html -w "FTP  status=%{http_code} bytes=%{size_download}\n" "ftp://ftp.bom.gov.au/anon/gen/fwo/$f"
-          curl -sS -m 60 -L -o www_b.html -w "WWW browser-UA status=%{http_code} bytes=%{size_download} final=%{url_effective}\n" -A "$UA" "http://www.bom.gov.au/fwo/$f"
-          curl -sS -m 60 -L -o www_c.html -w "WWW default-UA status=%{http_code} bytes=%{size_download}\n" "http://www.bom.gov.au/fwo/$f"
           python3 - <<'EOF'
           import re, html, os
-          for fn in ["ftp_b.html", "www_b.html"]:
-              if not os.path.exists(fn) or os.path.getsize(fn) == 0:
-                  print(fn, "empty"); continue
-              t = open(fn, errors="ignore").read()
-              title = re.search(r"<title>(.*?)</title>", t, re.S)
-              print("==", fn, "title:", title.group(1).strip()[:100] if title else None)
-              issued = re.findall(r"[Ii]ssued[^<]{0,80}", t)[:2]
-              print("   issued:", issued)
-              # Header row(s) near Audley: find the table containing it and print its header + Audley row
-              tables = re.findall(r"<table.*?</table>", t, re.S)
-              for tb in tables:
-                  if not re.search(r"audley|066176", tb, re.I): continue
-                  rows = re.findall(r"<tr[^>]*>(.*?)</tr>", tb, re.S)
-                  def cells(r): return [html.unescape(re.sub("<[^>]+>", "", c)).strip() for c in re.findall(r"<t[dh][^>]*>(.*?)</t[dh]>", r, re.S)]
-                  hdrs = [cells(r) for r in rows[:3]]
-                  print("   table rows:", len(rows), "| header rows:", hdrs)
-                  for r in rows:
-                      if re.search(r"audley|066176", r, re.I): print("   AUDLEY ROW:", cells(r)); break
-                  break
-              times = re.findall(r"\b(\d{1,2}:\d{2})\b", t)
-              print("   distinct clock times in page:", sorted(set(times))[:30])
+          def cells(r): return [html.unescape(re.sub("<[^>]+>", "", c)).strip() for c in re.findall(r"<t[dh][^>]*>(.*?)</t[dh]>", r, re.S)]
+          for f in ["IDN60159.html", "IDN60167.html", "IDN60175.html"]:
+              for src in ["ftp_", "www_"]:
+                  fn = src + f
+                  if not os.path.exists(fn) or os.path.getsize(fn) == 0:
+                      print("==", fn, "empty"); continue
+                  t = open(fn, errors="ignore").read()
+                  h1 = re.findall(r"<h1[^>]*>(.*?)</h1>|<h2[^>]*>(.*?)</h2>|<title>(.*?)</title>", t, re.S)
+                  heads = [html.unescape(re.sub("<[^>]+>", "", "".join(x))).strip() for x in h1][:3]
+                  issued = re.findall(r"[Ii]ssued at[^<\n]{0,60}", t)[:1]
+                  print("==", fn, "| headings:", heads, "| issued:", issued)
+                  for tb in re.findall(r"<table.*?</table>", t, re.S):
+                      if not re.search(r"audley", tb, re.I): continue
+                      rows = re.findall(r"<tr[^>]*>(.*?)</tr>", tb, re.S)
+                      print("   rows:", len(rows))
+                      for r in rows[:3]: print("   HDR:", cells(r)[:14])
+                      for r in rows:
+                          if re.search(r"audley", r, re.I): print("   AUDLEY:", cells(r)[:14]); break
+                      break
+                  if src == "www_": break   # only need one copy of the body detail
           EOF
-
-      - name: "Map page (greatersydney.shtml): Audley popup values and table links, www vs FTP"
-        continue-on-error: true
-        run: |
-          set +e
-          UA="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0 Safari/537.36"
-          curl -sS -m 60 -L -A "$UA" -o gs.html -w "greatersydney www browser-UA status=%{http_code} bytes=%{size_download}\n" "http://www.bom.gov.au/nsw/flood/greatersydney.shtml"
-          grep -o 'PopupRain([^)]*Audley[^)]*)' gs.html | head -3
-          grep -io 'issued[^<]\{0,80\}' gs.html | head -2
-          echo "--- links with tbl / bulletin on the map page ---"
-          grep -o 'href="[^"]*"' gs.html | grep -i 'tbl\|IDN60\|bulletin\|table' | sort -u | head -15
-          echo "--- FTP: any greatersydney / nsw flood map mirror? ---"
-          grep -i 'greatersydney\|sydney' ftp_list.txt 2>/dev/null | head -5
-          curl -sS -m 60 -o /dev/null -w "ftp anon/gen/fwo/greatersydney.shtml status=%{http_code}\n" "ftp://ftp.bom.gov.au/anon/gen/fwo/greatersydney.shtml"
