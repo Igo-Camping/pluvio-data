@@ -25,7 +25,11 @@ jobs:
           node-version: '22'
 
       - name: Install dependencies
-        run: npm install --no-audit --no-fund
+        # npm ci, not npm install: the runner's npm 10 strips the "libc" fields
+        # npm 11 writes into package-lock.json, leaving it modified-but-unstaged
+        # so the `git pull --rebase` below aborts with exit 128. ci never writes
+        # the lockfile.
+        run: npm ci --no-audit --no-fund
 
       - name: Ingest new radar frames
         run: node scripts/build_radar_bom.mjs
