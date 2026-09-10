@@ -1,3 +1,8 @@
 node_modules/
 # Local mirror of the per-site radar accumulation published to R2 (build_radar_sites.mjs)
 radar_sites/
+# Working data for the station-catalogue scripts: upstream inventories in, derived
+# intermediates out. Ignored because the repo root is served publicly at
+# data.pluviometrics.com.au — committing these would publish them.
+source/
+outputs/
