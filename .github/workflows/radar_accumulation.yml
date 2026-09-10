@@ -41,6 +41,6 @@ jobs:
             echo "No changes."
           else
             git commit -m "radar/nb: update accumulation grids ($(date -u +%Y-%m-%dT%H:%MZ))"
-            git pull --rebase origin main
+            git pull --rebase --autostash origin main
             git push origin main
           fi
